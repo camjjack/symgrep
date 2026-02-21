@@ -1,0 +1,43 @@
+default_stages: [pre-commit]
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: check-toml # Validates Cargo.toml syntax
+      - id: check-yaml # Validates .yaml files
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-added-large-files # Prevents accidental commit of binaries/videos
+
+  - repo: local
+    hooks:
+      - id: typos
+        name: typos
+        entry: typos --force-exclude
+        language: system
+        pass_filenames: false
+        types: [text]
+
+  - repo: local
+    hooks:
+      - id: rust-fmt
+        name: rust-fmt
+        entry: cargo fmt -- --check
+        language: system
+        files: \.rs$
+        pass_filenames: false
+
+      - id: rust-clippy
+        name: rust-clippy
+        entry: cargo clippy --all-targets -- -D warnings
+        language: system
+        files: \.rs$
+        pass_filenames: false
+
+      - id: cargo-check
+        name: cargo check
+        entry: cargo check --all-features
+        language: system
+        files: \.rs$
+        pass_filenames: false
