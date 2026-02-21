@@ -3,6 +3,14 @@ name = "symgrep"
 version = "0.1.0"
 edition = "2024"
 repository = "https://github.com/camjjack/symgrep"
+homepage = "https://github.com/camjjack/symgrep"
+documentation = "https://github.com/camjjack/symgrep"
+license-file = "LICENSE"
+description = """
+symgrep is a binary file search tool that recursively searches a directory
+for symbols matching a regex pattern. Cross platform but supports searching ELFs.
+"""
+keywords = ["regex", "grep", "symbols", "search", "pattern", "elf"]
 
 [dependencies]
 clap = { version = "4.5.60", features = ["derive"] }
