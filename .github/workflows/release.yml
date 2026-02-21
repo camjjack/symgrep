@@ -20,7 +20,7 @@ jobs:
 
       - &install-rust
         name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Run release-plz
         uses: release-plz/action@v0.5
