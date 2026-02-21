@@ -2,7 +2,7 @@ name: Release Build
 
 on:
   workflow_run:
-    workflows: ["Release-plz release"]
+    workflows: ["Release"]
     types: [completed]
 
 jobs:
