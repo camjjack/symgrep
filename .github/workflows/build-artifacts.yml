@@ -1,9 +1,9 @@
 name: Release Build
 
 on:
-  workflow_run:
-    workflows: ["Release"]
-    types: [completed]
+  push:
+    tags:
+      - "v*"
 
 jobs:
   build:
