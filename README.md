@@ -24,3 +24,13 @@ cargo install symgrep
 ### Release binaries
 
 Available at https://github.com/camjjack/symgrep/releases/latest
+
+## Exit codes
+
+Like `grep`, symgrep reports its result through the exit code:
+
+| Code | Meaning                          |
+| ---- | -------------------------------- |
+| 0    | At least one symbol matched      |
+| 1    | No symbols matched               |
+| 2    | An error occurred (e.g. invalid regex, unreadable file) |

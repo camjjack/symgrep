@@ -5,6 +5,8 @@ use rayon::prelude::*;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 mod engine;
 use engine::{SymbolKind, parse_symbols};
@@ -40,7 +42,7 @@ fn is_elf_file(path: &Path) -> bool {
     false
 }
 
-fn main() -> std::io::Result<()> {
+fn main() -> ExitCode {
     env_logger::Builder::from_default_env()
         .filter_level(log::LevelFilter::Warn)
         .init();
@@ -53,7 +55,7 @@ fn main() -> std::io::Result<()> {
         Ok(re) => re,
         Err(e) => {
             eprintln!("Invalid regex '{}': {}", args.pattern, e);
-            std::process::exit(2);
+            return ExitCode::from(2);
         }
     };
 
@@ -79,10 +81,16 @@ fn main() -> std::io::Result<()> {
         elf_files.len(),
         rayon::current_num_threads()
     );
+    // Track results across threads so we can return a grep-style exit code:
+    // 0 if any symbol matched, 1 if none matched, 2 if any file errored.
+    let found = AtomicBool::new(false);
+    let errored = AtomicBool::new(false);
+
     elf_files.into_par_iter().for_each(|path| {
         match parse_symbols(&path, &re, !args.exports_only, !args.imports_only) {
             Ok(matches) => {
                 if !matches.is_empty() {
+                    found.store(true, Ordering::Relaxed);
                     // Build the whole block and emit it with a single write so
                     // output from concurrent threads cannot interleave.
                     let mut out = String::new();
@@ -98,10 +106,17 @@ fn main() -> std::io::Result<()> {
                 }
             }
             Err(e) => {
+                errored.store(true, Ordering::Relaxed);
                 eprintln!("Error parsing {:?}: {}", path, e);
             }
         }
     });
 
-    Ok(())
+    if errored.into_inner() {
+        ExitCode::from(2)
+    } else if found.into_inner() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    }
 }

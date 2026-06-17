@@ -50,6 +50,15 @@ fn test_conflicting_filters_rejected() {
 }
 
 #[test]
+fn test_no_match_exit_code() {
+    // grep convention: exit 1 when nothing matched.
+    cargo_bin_cmd!("symgrep")
+        .args(["no_such_symbol_xyz", "tests/fixtures"])
+        .assert()
+        .code(1);
+}
+
+#[test]
 fn test_directory_recursion() {
     // Scanning the fixtures directory should find both ELF files.
     cargo_bin_cmd!("symgrep")
