@@ -14,7 +14,7 @@ use engine::{SymbolKind, parse_symbols};
 #[command(about = "Grep for symbols in ELF binaries", long_about = None)]
 struct Args {
     /// Limit results to exported symbols only
-    #[arg(short, long, default_value_t = false)]
+    #[arg(short, long, default_value_t = false, conflicts_with = "imports_only")]
     exports_only: bool,
 
     /// Limit results to imported symbols only
@@ -47,6 +47,16 @@ fn main() -> std::io::Result<()> {
 
     let args = Args::parse();
 
+    // Compile the regex once, up front, so an invalid pattern fails fast with a
+    // single clear error instead of once per file inside the parallel scan.
+    let re = match regex::Regex::new(&args.pattern) {
+        Ok(re) => re,
+        Err(e) => {
+            eprintln!("Invalid regex '{}': {}", args.pattern, e);
+            std::process::exit(2);
+        }
+    };
+
     let mut elf_files = Vec::new();
 
     let walker = WalkBuilder::new(&args.path)
@@ -70,22 +80,21 @@ fn main() -> std::io::Result<()> {
         rayon::current_num_threads()
     );
     elf_files.into_par_iter().for_each(|path| {
-        match parse_symbols(
-            &path,
-            &args.pattern,
-            !&args.exports_only,
-            !&args.imports_only,
-        ) {
+        match parse_symbols(&path, &re, !args.exports_only, !args.imports_only) {
             Ok(matches) => {
                 if !matches.is_empty() {
-                    println!("{}", path.display());
+                    // Build the whole block and emit it with a single write so
+                    // output from concurrent threads cannot interleave.
+                    let mut out = String::new();
+                    out.push_str(&format!("{}\n", path.display()));
                     for m in matches {
                         let kind_str = match m.kind {
                             SymbolKind::Import => "IMPORT",
                             SymbolKind::Export => "EXPORT",
                         };
-                        println!("  {} [{}]", m.name, kind_str);
+                        out.push_str(&format!("  {} [{}]\n", m.name, kind_str));
                     }
+                    print!("{out}");
                 }
             }
             Err(e) => {
