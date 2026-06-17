@@ -19,6 +19,10 @@ pub enum SymbolKind {
 
 /// Parses an ELF file at the given path and extracts symbols matching the regex.
 ///
+/// Only the dynamic symbol table (`.dynsym`) is searched, so this reports
+/// imported and exported symbols — not the full set of static symbols in
+/// `.symtab` (which is absent in stripped binaries anyway).
+///
 /// # Arguments
 /// * `path` - Path to the binary.
 /// * `re` - The compiled regex to match symbol names against.
