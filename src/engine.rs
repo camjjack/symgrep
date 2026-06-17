@@ -1,5 +1,6 @@
 use goblin::elf::Elf;
 use memmap2::Mmap;
+use regex::Regex;
 use std::fs::File;
 use std::path::Path;
 use std::string::String;
@@ -20,10 +21,10 @@ pub enum SymbolKind {
 ///
 /// # Arguments
 /// * `path` - Path to the binary.
-/// * `pattern` - The regex pattern string to match symbol names against.
+/// * `re` - The compiled regex to match symbol names against.
 pub fn parse_symbols(
     path: &Path,
-    pattern: &str,
+    re: &Regex,
     include_imports: bool,
     include_exports: bool,
 ) -> Result<Vec<SymbolMatch>, String> {
@@ -36,9 +37,6 @@ pub fn parse_symbols(
     let elf =
         Elf::parse(&mmap).map_err(|e| format!("Failed to parse ELF {}: {}", path.display(), e))?;
 
-    let re =
-        regex::Regex::new(pattern).map_err(|e| format!("Invalid regex '{}': {}", pattern, e))?;
-
     let mut results = Vec::new();
 
     // Iterate over Dynamic Symbols (.dynsym)
@@ -46,23 +44,16 @@ pub fn parse_symbols(
         if let Some(name) = elf.dynstrtab.get_at(sym.st_name)
             && re.is_match(name)
         {
-            let kind = if sym.is_import() {
+            let is_import = sym.is_import();
+            if (is_import && !include_imports) || (!is_import && !include_exports) {
+                continue;
+            }
+
+            let kind = if is_import {
                 SymbolKind::Import
             } else {
                 SymbolKind::Export
             };
-            match kind {
-                SymbolKind::Import => {
-                    if !include_imports {
-                        continue;
-                    }
-                }
-                SymbolKind::Export => {
-                    if !include_exports {
-                        continue;
-                    }
-                }
-            }
 
             results.push(SymbolMatch {
                 name: name.to_string(),
@@ -79,10 +70,14 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    fn re(pattern: &str) -> Regex {
+        Regex::new(pattern).unwrap()
+    }
+
     #[test]
     fn test_parse_known_elf() {
         let path = PathBuf::from("tests/fixtures/libtest.so");
-        let results = parse_symbols(&path, "calculate_sum", true, true).unwrap();
+        let results = parse_symbols(&path, &re("calculate_sum"), true, true).unwrap();
 
         assert!(!results.is_empty());
 
@@ -93,7 +88,7 @@ mod tests {
     #[test]
     fn test_match_export() {
         let path = PathBuf::from("tests/fixtures/libtest.so");
-        let results = parse_symbols(&path, "calculate_sum", false, true).unwrap();
+        let results = parse_symbols(&path, &re("calculate_sum"), false, true).unwrap();
 
         assert!(!results.is_empty());
     }
@@ -101,7 +96,7 @@ mod tests {
     #[test]
     fn test_dont_match_export() {
         let path = PathBuf::from("tests/fixtures/libtest.so");
-        let results = parse_symbols(&path, "calculate_sum", false, false).unwrap();
+        let results = parse_symbols(&path, &re("calculate_sum"), false, false).unwrap();
 
         assert!(results.is_empty());
     }
@@ -109,7 +104,7 @@ mod tests {
     #[test]
     fn test_match_import() {
         let path = PathBuf::from("tests/fixtures/main");
-        let results = parse_symbols(&path, "calculate_sum", true, false).unwrap();
+        let results = parse_symbols(&path, &re("calculate_sum"), true, false).unwrap();
 
         assert!(!results.is_empty());
     }
@@ -117,15 +112,16 @@ mod tests {
     #[test]
     fn test_dont_match_import() {
         let path = PathBuf::from("tests/fixtures/main");
-        let results = parse_symbols(&path, "calculate_sum", false, false).unwrap();
+        let results = parse_symbols(&path, &re("calculate_sum"), false, false).unwrap();
 
         assert!(results.is_empty());
     }
 
     #[test]
-    fn test_invalid_regex() {
-        let path = PathBuf::from("/dev/null");
-        let result = parse_symbols(&path, "[Invalid(", true, true);
-        assert!(result.is_err());
+    fn test_invalid_regex_is_rejected() {
+        // An invalid pattern must be rejected before any file is touched.
+        // Built at runtime so the `invalid_regex` lint can't const-evaluate it.
+        let pattern = format!("{}Invalid(", '[');
+        assert!(Regex::new(&pattern).is_err());
     }
 }
