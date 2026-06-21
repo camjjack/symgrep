@@ -1,4 +1,7 @@
+use goblin::Object;
 use goblin::elf::Elf;
+use goblin::mach::{Mach, MachO, SingleArch};
+use goblin::pe::PE;
 use memmap2::Mmap;
 use regex::Regex;
 use std::fs::File;
@@ -17,7 +20,39 @@ pub enum SymbolKind {
     Export,
 }
 
-/// Parses an ELF file at the given path and extracts symbols matching the regex.
+/// Bundles the per-search criteria so the per-format collectors stay terse.
+struct Filter<'a> {
+    re: &'a Regex,
+    include_imports: bool,
+    include_exports: bool,
+}
+
+impl Filter<'_> {
+    /// Records `name` if it passes the import/export filter and matches the regex.
+    fn consider(&self, name: &str, is_import: bool, results: &mut Vec<SymbolMatch>) {
+        if (is_import && !self.include_imports) || (!is_import && !self.include_exports) {
+            return;
+        }
+        if !self.re.is_match(name) {
+            return;
+        }
+        results.push(SymbolMatch {
+            name: name.to_string(),
+            kind: if is_import {
+                SymbolKind::Import
+            } else {
+                SymbolKind::Export
+            },
+        });
+    }
+}
+
+/// Parses a binary at the given path and extracts symbols matching the regex.
+///
+/// Reports imported and exported symbols across ELF, Mach-O and PE. For ELF
+/// this is the dynamic symbol table (`.dynsym`) — not the full `.symtab`, which
+/// is absent in stripped binaries anyway. The format is detected from the file
+/// contents, so an all-ELF tree takes the ELF path with no extra work.
 ///
 /// # Arguments
 /// * `path` - Path to the binary.
@@ -34,35 +69,74 @@ pub fn parse_symbols(
     let mmap = unsafe { Mmap::map(&file) }
         .map_err(|e| format!("Failed to mmap file {}: {}", path.display(), e))?;
 
-    let elf =
-        Elf::parse(&mmap).map_err(|e| format!("Failed to parse ELF {}: {}", path.display(), e))?;
+    let obj =
+        Object::parse(&mmap).map_err(|e| format!("Failed to parse {}: {}", path.display(), e))?;
 
+    let filter = Filter {
+        re,
+        include_imports,
+        include_exports,
+    };
     let mut results = Vec::new();
 
-    // Iterate over Dynamic Symbols (.dynsym)
-    for sym in elf.dynsyms.iter() {
-        if let Some(name) = elf.dynstrtab.get_at(sym.st_name)
-            && re.is_match(name)
-        {
-            let is_import = sym.is_import();
-            if (is_import && !include_imports) || (!is_import && !include_exports) {
-                continue;
+    match obj {
+        Object::Elf(elf) => collect_elf(&elf, &filter, &mut results),
+        Object::Mach(Mach::Binary(macho)) => collect_macho(&macho, &filter, &mut results)?,
+        Object::Mach(Mach::Fat(multi)) => {
+            for arch in &multi {
+                let arch = arch
+                    .map_err(|e| format!("Failed to parse fat Mach-O {}: {}", path.display(), e))?;
+                if let SingleArch::MachO(macho) = arch {
+                    collect_macho(&macho, &filter, &mut results)?;
+                }
             }
-
-            let kind = if is_import {
-                SymbolKind::Import
-            } else {
-                SymbolKind::Export
-            };
-
-            results.push(SymbolMatch {
-                name: name.to_string(),
-                kind,
-            });
         }
+        Object::PE(pe) => collect_pe(&pe, &filter, &mut results),
+        // TE / COFF / Archive / Unknown carry no import/export table we report.
+        _ => {}
     }
 
     Ok(results)
+}
+
+/// ELF: walk the dynamic symbol table (`.dynsym`).
+fn collect_elf(elf: &Elf, filter: &Filter, results: &mut Vec<SymbolMatch>) {
+    for sym in elf.dynsyms.iter() {
+        if let Some(name) = elf.dynstrtab.get_at(sym.st_name) {
+            filter.consider(name, sym.is_import(), results);
+        }
+    }
+}
+
+/// Mach-O: walk the symbol table (nlist), reporting external symbols. An
+/// undefined external is an import, a defined external is an export — the
+/// `imports()`/`exports()` helpers miss imports bound via chained fixups, which
+/// is how modern arm64 binaries link, so we read the symbol table directly.
+fn collect_macho(
+    macho: &MachO,
+    filter: &Filter,
+    results: &mut Vec<SymbolMatch>,
+) -> Result<(), String> {
+    for sym in macho.symbols() {
+        let (name, nl) = sym.map_err(|e| format!("Failed to read Mach-O symbol: {}", e))?;
+        // Only external (global) symbols are imports/exports; skip locals.
+        if nl.is_global() {
+            filter.consider(name, nl.is_undefined(), results);
+        }
+    }
+    Ok(())
+}
+
+/// PE: the import directory and the export table.
+fn collect_pe(pe: &PE, filter: &Filter, results: &mut Vec<SymbolMatch>) {
+    for imp in &pe.imports {
+        filter.consider(imp.name.as_ref(), true, results);
+    }
+    for exp in &pe.exports {
+        if let Some(name) = exp.name {
+            filter.consider(name, false, results);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -115,6 +189,30 @@ mod tests {
         let results = parse_symbols(&path, &re("calculate_sum"), false, false).unwrap();
 
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_macho_export() {
+        let path = PathBuf::from("tests/fixtures/libtest.dylib");
+        let results = parse_symbols(&path, &re("calculate_sum"), false, true).unwrap();
+
+        let sym = results
+            .iter()
+            .find(|r| r.name.contains("calculate_sum"))
+            .expect("calculate_sum export not found");
+        assert!(matches!(sym.kind, SymbolKind::Export));
+    }
+
+    #[test]
+    fn test_macho_import() {
+        let path = PathBuf::from("tests/fixtures/main_macho");
+        let results = parse_symbols(&path, &re("calculate_sum"), true, false).unwrap();
+
+        let sym = results
+            .iter()
+            .find(|r| r.name.contains("calculate_sum"))
+            .expect("calculate_sum import not found");
+        assert!(matches!(sym.kind, SymbolKind::Import));
     }
 
     #[test]

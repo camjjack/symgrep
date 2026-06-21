@@ -520,7 +520,6 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "clap",
- "clap_derive",
  "env_logger",
  "goblin",
  "ignore",
